@@ -1,5 +1,7 @@
 .idea
 .env
-/develop
-vendor
 /storage
+/vendor
+/develop
+/tmp
+composer.lock
