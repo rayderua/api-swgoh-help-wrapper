@@ -25,7 +25,8 @@ Class Api {
         'api.credentials'       => __DIR__ . '/api-swgoh-help.json',
         'api.lang'              => 'eng_us',
         'api.version.lang'      => null,
-        'api.version.version'   => null,
+        'api.version.game'      => null,
+        'api.force'             => false,
         /* logging */
         'log'           => false,
         'log.verbose'   => false,
@@ -163,6 +164,12 @@ Class Api {
 
 
     /**
+     * API Token expire
+     * @var string
+     */
+    private $token_expire_at = null;
+
+    /**
      * Api constructor.
      * @param array $config
      */
@@ -202,6 +209,14 @@ Class Api {
 
         if ( TRUE == array_key_exists('api.credentials', $config) ) {
             $this->params['api.credentials'] = $config['api.credentials'];
+        }
+
+        if ( TRUE == array_key_exists('api.force', $config) ) {
+            if ( is_bool($config['api.force']) ) {
+                $this->params['api.force'] = $config['api.force'];
+            } else {
+                $this->logger->error(sprintf('config: invalid value for api.force: %s', $config['api.force']));
+            }
         }
 
         /* Update http config */
@@ -338,7 +353,6 @@ Class Api {
     private function initCache($config)
     {
         if ( TRUE == is_null($this->cache) ) {
-            $this->logger->debug('cache:init');
             $this->cache = new Cache($this->logger);
             $this->cache->config($config);
         }
@@ -394,9 +408,14 @@ Class Api {
         foreach ($players as $player ) {
             /* default state */
             $result[$player] = ['success' => false, 'data' => null];
-            $cache = $this->cache()->players($player);
-            if ( NULL == $cache ) {
-                continue;
+
+            if ( TRUE == $this->params['api.force'] ) {
+                $cache = null;
+            } else {
+                $cache = $this->cache()->players($player);
+                if ( NULL == $cache ) {
+                    continue;
+                }
             }
 
             if ( NULL != $cache[$player]  ) {
@@ -477,10 +496,15 @@ Class Api {
         $query = array();
         foreach ($players as $player ) {
             $result[$player] = ['success' => false, 'data' => null];
-            $cache = $this->cache()->guilds($player);
-            if ( NULL == $cache ) {
-                array_push($query, $player);
-                continue;
+
+            if ( TRUE == $this->params['api.force'] ) {
+                $cache = null;
+            } else {
+                $cache = $this->cache()->guilds($player);
+                if ( NULL == $cache ) {
+                    array_push($query, $player);
+                    continue;
+                }
             }
 
             if ( NULL != $cache[$player]  ) {
@@ -578,25 +602,35 @@ Class Api {
         if ( 0 == count($collections) ) {
             return null;
         }
+        $this->getVersion();
 
         $result = array();
-        foreach ($collections as $collection ) {
-            $result[$collection] = [ 'success' => false, 'data' => null ];
+        $query = array();
+        foreach ( $collections as $collection ) {
+            $result[$collection] = ['success' => false, 'data' => null];
 
+            if (TRUE == $this->params['api.force']) {
+                $cache = null;
+            } else {
+                $cache = $this->cache()->data($collection);
+                if ( NULL == $cache ) {
+                    array_push($query, $collection);
+                    continue;
+                } else {
+                    $result[$collection] = ['success' => true, 'data' => $cache];
+                }
+            }
+        }
+
+        foreach ($query as $collection ) {
             $payload = $this->validatePayload(static::API_DATA, $payload, $collection);
             $payload['collection'] = $collection;
 
-            try {
-                $res = $this->requestAPI(static::API_DATA, $payload);
-            } catch (GuzzleException $e) {
-            }
-
-            if ( TRUE == in_array($res['code'], [200, 404] ) ) {
-                $result[$collection] = ['success' => true, 'data' => null];
-
-                if ( 200 == $res['code']) {
-                    $result[$collection] = ['success' => true, 'data' => $res['data']];
-                }
+            $res = $this->requestAPI(static::API_DATA, $payload);
+            file_put_contents('http.json', json_encode($res['data'],JSON_PRETTY_PRINT));
+            if ( 200 == $res['code']) {
+                $result[$collection] = ['success' => true, 'data' => $res['data']];
+                $this->cache()->dataSave($collection, $res['data']);
             }
         }
 
@@ -780,45 +814,58 @@ Class Api {
     private function checkAPI()
     {
 
-        if ( FALSE == $this->aliveAPI() ) {
+        if ( FALSE == $this->getVersion() ) {
             return false;
         }
 
         if ( NULL == $this->token ) {
-            return $this->loginAPI();
-        }
 
-        if ( FALSE == file_exists($this->params['api.credentials']) ) {
-            return $this->loginAPI();
-        }
+            if (FALSE == file_exists($this->params['api.credentials'])) {
+                $this->logger->debug(sprintf('auth: no such file: %s', $this->params['api.credentials']));
+                return $this->loginAPI();
+            }
 
-        $json = json_decode(file_get_contents($this->params['api.credentials']), JSON_OBJECT_AS_ARRAY);
-        if ( NULL == $json ) {
-            return $this->loginAPI();
-        }
+            $json = json_decode(file_get_contents($this->params['api.credentials']), JSON_OBJECT_AS_ARRAY);
+            if (NULL == $json) {
+                $this->logger->debug(sprintf('auth: credential corrupt'));
+                return $this->loginAPI();
+            }
 
-        if ( FALSE == array_key_exists('expires_at', $json) ) {
-            return $this->loginAPI();
-        }
+            if (FALSE == array_key_exists('expires_at', $json)) {
+                $this->logger->debug(sprintf('auth: credential no expires'));
+                return $this->loginAPI();
+            }
 
-        if ( FALSE == array_key_exists('access_token', $json) ) {
-            return $this->loginAPI();
-        }
+            if (FALSE == array_key_exists('access_token', $json)) {
+                $this->logger->debug(sprintf('auth: credential no access_token'));
+                return $this->loginAPI();
+            }
 
-        if ( time() >= $json['expires_at'] - 60 ) {
-            return $this->loginAPI();
+            if (time() >= $json['expires_at'] - 60) {
+                $this->logger->debug(sprintf('auth: credential expired'));
+                return $this->loginAPI();
+            }
+        } else {
+            if ( NULL == $this->token_expire_at ) {
+                return $this->loginAPI();
+            } else {
+                if ( time() < $this->token_expire_at - 60) {
+                    return $this->loginAPI();
+                }
+            }
         }
 
         $this->token = $json['access_token'];
+        $this->token_expire_at = $json['expires_at'];
         return true;
     }
 
 
     /**
-     * Api check for alive
+     * Api get version
      * @return bool
      */
-    private function aliveAPI()
+    private function getVersion()
     {
 
         try {
@@ -837,6 +884,10 @@ Class Api {
             if ( 200 == $code ) {
                 $this->params['api.version.lang'] = json_decode($body)->language;
                 $this->params['api.version.game'] = json_decode($body)->game;
+                $this->cache()->config([
+                    'api.version.lang' => $this->params['api.version.lang'],
+                    'api.version.game' => $this->params['api.version.game'],
+                ]);
                 return true;
             }
         }
@@ -845,7 +896,6 @@ Class Api {
             $this->logger->error(sprintf("api: request error: %s", $e->getMessage()));
             $this->logger->debug("api: is down");
             return false;
-        } catch (GuzzleException $e) {
         }
 
         return false;

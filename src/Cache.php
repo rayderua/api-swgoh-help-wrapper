@@ -26,7 +26,10 @@ Class Cache {
      * Cache config
      * @var array
      */
-    private $params;
+    private $params = [
+        'api.version.lang' => null,
+        'api.version.lang' => null,
+    ];
 
 
     /**
@@ -116,7 +119,17 @@ Class Cache {
             }
         }
 
-        $this->logger->debug(sprintf('cache:config update'));
+        if ( TRUE == array_key_exists('api.version.lang', $config)) {
+            $this->params['api.version.lang'] = $config['api.version.lang'];
+        }
+
+        if ( TRUE == array_key_exists('api.version.game', $config)) {
+            $this->params['api.version.game'] = $config['api.version.game'];
+        }
+        if ( TRUE == array_key_exists('api.lang', $config)) {
+            $this->params['api.lang'] = $config['api.lang'];
+        }
+
         return $this->params;
     }
 
@@ -144,7 +157,7 @@ Class Cache {
                 }
             }
         }
-        $this->logger->debug(sprintf('cache:storage ok'));
+
         return true;
     }
 
@@ -195,7 +208,7 @@ Class Cache {
 
 
     /**
-     * Get player info from cache
+     * Get player from cache
      * @param $players
      * @return array|null
      */
@@ -220,7 +233,7 @@ Class Cache {
 
 
     /**
-     * Get guilds info from cache
+     * Get guilds from cache
      * @param $players
      * @return array|null
      */
@@ -242,6 +255,22 @@ Class Cache {
         }
 
         return  $result;
+    }
+
+
+    /**
+     * Get data from cache
+     * @param $collections
+     * @return array
+     */
+    public  function data($collection) {
+
+        if ( FALSE == $this->params['cache'] ) {
+            $this->logger->error("Cache disabled, set cache=true for use cache data");
+            return null;
+        } else {
+            return $this->dataCache($collection);
+        }
     }
 
 
@@ -273,7 +302,6 @@ Class Cache {
             }
 
             if ( $meta['updated_at'] > time() - $this->params['cache.player']) {
-                $this->logger->debug(sprintf('player/%s: cache ok = %s', $player, $meta['code']));
                 $status = true;
             } else {
                 $this->logger->debug(sprintf('player/%s: cache expired', $player));
@@ -284,9 +312,17 @@ Class Cache {
             }
 
             if ( TRUE == $status) {
-                return json_decode(file_get_contents($path['data']), JSON_OBJECT_AS_ARRAY);
+                $data = json_decode(file_get_contents($path['data']), JSON_OBJECT_AS_ARRAY);
+                if (NULL == $data) {
+                    $this->logger->debug(sprintf('guild/%s: cache data corrupted', $player));
+                    return null;
+                } else {
+                    $this->logger->debug(sprintf('player/%s: cache ok = %s', $player, $meta['code']));
+                    return $data;
+                }
             }
         }
+
         return null;
     }
 
@@ -324,7 +360,6 @@ Class Cache {
 
         $status = false;
         if ( $meta['updated_at'] > time() - $this->params['cache.guild'] ) {
-            $this->logger->debug(sprintf('guild/%s: cache ok - %s', $player, $meta['code']));
             $status = true;
         } else {
             $this->logger->debug(sprintf('guild/%s: cache expired', $player));
@@ -335,9 +370,57 @@ Class Cache {
         }
 
         if ( TRUE == $status ) {
-            return json_decode(file_get_contents($path['data']), JSON_OBJECT_AS_ARRAY);
+            $data = json_decode(file_get_contents($path['data']), JSON_OBJECT_AS_ARRAY);
+            if (NULL == $data) {
+                $this->logger->debug(sprintf('guild/%s: cache data corrupted', $player));
+                return null;
+            } else {
+                $this->logger->debug(sprintf('guild/%s: cache ok - %s', $player, $meta['code']));
+                return $data;
+            }
         }
         return null;
+    }
+
+
+    /**
+     * Fetch data from cache
+     * @param $collection
+     * @return mixed|null
+     */
+    private function dataCache($collection) {
+
+        $path = $this->cacheDataPath($collection);
+
+        if ( FALSE == file_exists($path['meta']) ) {
+            $this->logger->debug(sprintf('date/%s: cache absent', $collection));
+            return null;
+        }
+        $meta = json_decode(file_get_contents($path['meta']), JSON_OBJECT_AS_ARRAY);
+
+        if ( FALSE == file_exists($path['data'])) {
+            $this->logger->debug(sprintf('data/%s: cache error, no data', $collection));
+            return null;
+        }
+
+        if ( $meta['api.version.game'] != $this->params['api.version.game'] ) {
+            $this->logger->error(sprintf('data/%s: game version mismatch'));
+            return null;
+        }
+
+        if ( $meta['api.lang'] != $this->params['api.lang'] ) {
+            $this->logger->error(sprintf('data/%s: lang mismatch'));
+            return null;
+        }
+
+        $data = json_decode(file_get_contents($path['data']), JSON_OBJECT_AS_ARRAY);
+        if ( NULL == $data ) {
+            $this->logger->debug(sprintf('data/%s: cache data corrupted', $collection));
+            return null;
+        }
+
+        $this->logger->debug(sprintf('data/%s: cache ok', $collection));
+        return $data;
     }
 
 
@@ -442,7 +525,7 @@ Class Cache {
                 $this->logger->debug(sprintf('guild:%s data save error', $guild));
                 return false;
             }
-            $this->logger->debug(sprintf('guild/%s: saved', $guild));
+            $this->logger->debug(sprintf('guild:%s saved', $guild));
         }
 
         /* save roster */
@@ -451,7 +534,7 @@ Class Cache {
             if ( FALSE == file_put_contents($path['meta'], json_encode($metadata), LOCK_EX) ) {
                 $this->logger->debug(sprintf('guild:%s meta save error', $guild));
             }
-            $this->logger->debug(sprintf('guild/%s: saved', $player['allyCode']));
+            $this->logger->debug(sprintf('guild:%s saved', $player['allyCode']));
         }
 
         return true;
@@ -459,22 +542,37 @@ Class Cache {
 
 
     /**
-     * Get data from cache
-     * @param $collections
-     * @return array
+     * Save data cache
+     * @param $data
+     * @param int $code
+     * @return bool
      */
-    public function data($collections ) {
-        $result = [];
-        foreach ( $collections as $collection ) {
-            $result[$collection] = [ 'success' => false, 'data' => null ];
-        }
+    public  function dataSave($collection, $data){
+
         if ( FALSE == $this->params['cache'] ) {
-            $this->logger->error("Cache disabled, set cache=true for use cache data");
-            foreach ( $collections as $collection ) {
-                $result[$collection] = ['success' => true, 'data' => null];
-            }
+            return false;
         }
-        return $result;
+
+        $path = $this->cacheDataPath($collection);
+        $metadata = [
+            'api.lang'          => $this->params['api.lang'],
+            'api.version.game'  => $this->params['api.version.game'],
+            'api.version.lant'  => $this->params['api.version.lang'],
+            'updated_at'        => time(),
+        ];
+
+        if ( FALSE == @file_put_contents($path['meta'], json_encode($metadata), LOCK_EX) ) {
+            $this->logger->debug(sprintf('data:%s meta save error', $collection));
+            return false;
+        }
+
+        if ( FALSE == @file_put_contents($path['data'], json_encode($data), LOCK_EX) ) {
+            $this->logger->debug(sprintf('data:%s data save error', $collection));
+            return false;
+        }
+
+        $this->logger->debug(sprintf('data:%s saved ', $collection));
+        return true;
     }
 
 
