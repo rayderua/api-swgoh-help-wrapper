@@ -1,12 +1,13 @@
 {
     "name": "rayder/api-swgoh-help-wrapper",
     "description": "Php API wrapper for api.swgoh.help",
-    "version": "0.1.1",
+    "version": "0.1.2",
     "require": {
         "php": ">=5.6.0",
         "ext-json": "*",
         "guzzlehttp/guzzle": ">=6.0.0",
-        "monolog/monolog": "*"
+        "monolog/monolog": "*",
+        "ext-ctype": "*"
     },
     "autoload": {
         "classmap": [
